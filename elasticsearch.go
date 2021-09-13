@@ -25,7 +25,6 @@ import (
 	"net/url"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/elastic/go-elasticsearch/v8/esapi"
@@ -39,10 +38,7 @@ const (
 
 // Version returns the package version as a string.
 //
-const (
-	Version        = version.Client
-	unknownProduct = "the client noticed that the server is not Elasticsearch and we do not support this unknown product"
-)
+const Version = version.Client
 
 // Config represents the client configuration.
 //
@@ -92,9 +88,6 @@ type Config struct {
 type Client struct {
 	*esapi.API // Embeds the API methods
 	Transport  estransport.Interface
-
-	productCheckMu      sync.RWMutex
-	productCheckSuccess bool
 }
 
 // NewDefaultClient creates a new client with default options.
@@ -194,8 +187,7 @@ func NewClient(cfg Config) (*Client, error) {
 		return nil, fmt.Errorf("error creating transport: %s", err)
 	}
 
-	client := &Client{Transport: tp}
-	client.API = esapi.New(client)
+	client := &Client{Transport: tp, API: esapi.New(tp)}
 
 	if cfg.DiscoverNodesOnStart {
 		go client.DiscoverNodes()
@@ -207,54 +199,7 @@ func NewClient(cfg Config) (*Client, error) {
 // Perform delegates to Transport to execute a request and return a response.
 //
 func (c *Client) Perform(req *http.Request) (*http.Response, error) {
-	// Retrieve the original request.
-	res, err := c.Transport.Perform(req)
-
-	// ResponseCheck path continues, we run the header check on the first answer from ES.
-	if err == nil {
-		checkHeader := func() error { return genuineCheckHeader(res.Header) }
-		if err := c.doProductCheck(checkHeader); err != nil {
-			res.Body.Close()
-			return nil, err
-		}
-	}
-	return res, err
-}
-
-// doProductCheck calls f if there as not been a prior successful call to doProductCheck,
-// returning nil otherwise.
-func (c *Client) doProductCheck(f func() error) error {
-	c.productCheckMu.RLock()
-	productCheckSuccess := c.productCheckSuccess
-	c.productCheckMu.RUnlock()
-
-	if productCheckSuccess {
-		return nil
-	}
-
-	c.productCheckMu.Lock()
-	defer c.productCheckMu.Unlock()
-
-	if c.productCheckSuccess {
-		return nil
-	}
-
-	if err := f(); err != nil {
-		return err
-	}
-
-	c.productCheckSuccess = true
-
-	return nil
-}
-
-// genuineCheckHeader validates the presence of the X-Elastic-Product header
-//
-func genuineCheckHeader(header http.Header) error {
-	if header.Get("X-Elastic-Product") != "Elasticsearch" {
-		return errors.New(unknownProduct)
-	}
-	return nil
+	return c.Transport.Perform(req)
 }
 
 // Metrics returns the client metrics.
